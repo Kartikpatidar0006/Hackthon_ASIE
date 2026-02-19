@@ -50,9 +50,9 @@ class AlertEngine:
                 message=f"Significant momentum spike detected for '{skill_id.replace('_', ' ')}' "
                         f"(momentum index: {momentum:.3f}). "
                         f"Demand is accelerating rapidly across multiple signal sources.",
-                severity=RiskLevel.HIGH if momentum > 3.0 else RiskLevel.MEDIUM,
+                severity=RiskLevel.HIGH if abs(momentum) > 0.6 else RiskLevel.MEDIUM,
                 momentum_delta=momentum,
-                metadata={"momentum_index": momentum, "history_length": len(history)},
+                metadata={"momentum_index": round(momentum, 4), "history_length": len(history)},
             )
             new_alerts.append(alert)
 
@@ -148,22 +148,40 @@ class AlertEngine:
         if historical_avg < 0.2 and recent_avg > 0.4:
             return True
         # Strong acceleration
-        growth_rate = (recent_avg - historical_avg) / (historical_avg + 1e-8)
+        growth_rate = (recent_avg - historical_avg) / max(historical_avg, 0.01)
         return growth_rate > 1.5
 
     @staticmethod
     def _is_declining(ts: Any, forecast: Dict[str, Any]) -> bool:
-        """Detect sustained decline in skill demand."""
+        """Detect sustained decline in skill demand.
+        
+        Requires multiple confirming signals to avoid false positives:
+        - Low growth score (forecast predicts decline)
+        - Negative momentum (currently decelerating)
+        - Recent time-series below historical average
+        At least 2 of 3 conditions must be true, and growth must be < 0.25.
+        """
         growth_score = forecast.get("growth_score", 0.5)
-        if growth_score < 0.3:
-            return True
-        if ts.empty or len(ts) < 12:
+        momentum = forecast.get("momentum_index", 0.0)
+
+        # growth_score 0.5 = no growth, below 0.20 = severe decline only
+        low_growth = growth_score < 0.20
+        negative_momentum = momentum < -0.10
+
+        # If growth is reasonable (>= 0.30), definitely not declining
+        if growth_score >= 0.30:
             return False
-        composite = ts["composite_signal"].values
-        # Check if last 6 months are consistently below prior average
-        prior_avg = np.mean(composite[:-6])
-        recent_avg = np.mean(composite[-6:])
-        return recent_avg < prior_avg * 0.7
+
+        # Time-series check
+        ts_declining = False
+        if not (ts.empty or len(ts) < 12):
+            composite = ts["composite_signal"].values
+            prior_avg = np.mean(composite[:-6])
+            recent_avg = np.mean(composite[-6:])
+            ts_declining = recent_avg < prior_avg * 0.60  # 40% drop required
+
+        # Need ALL three signals to confirm genuine decline
+        return low_growth and negative_momentum and ts_declining
 
 
 # Module-level singleton

@@ -138,14 +138,23 @@ class ResumeAnalyzer:
         # Step 7: Top recommended skills
         recommended = self._get_recommendations(user_skills, gaps)
 
-        # Step 8: Role fit scores (for the selected industry or all)
+        # Step 8: Role fit scores
         role_fits = self._compute_role_fits(user_skills, target_industry)
         target_role_readiness = None
         if target_role:
-            for rf in role_fits:
-                if rf.role_id == target_role:
-                    target_role_readiness = rf.readiness_score
-                    break
+            # Put the selected role first, then top 4 alternatives
+            selected = [rf for rf in role_fits if rf.role_id == target_role]
+            others = [rf for rf in role_fits if rf.role_id != target_role][:4]
+            role_fits = selected + others
+            if selected:
+                target_role_readiness = selected[0].readiness_score
+        else:
+            role_fits = role_fits[:8]  # Limit to top 8 when no role selected
+
+        logger.info(
+            f"Analysis complete: {len(user_skills)} skills, {len(gaps)} gaps, "
+            f"role={target_role}, demand_keys={len(market_demand)}"
+        )
 
         return ResumeAnalysis(
             extracted_skills=list(user_skills.keys()),
@@ -164,23 +173,37 @@ class ResumeAnalyzer:
         market_demand: Dict[str, float],
         role_profile: Any = None,
     ) -> List[SkillGap]:
-        """Identify and score skill gaps with 3-5yr trend annotations."""
+        """Identify and score skill gaps with 3-5yr trend annotations.
+
+        Philosophy:
+        - If user lists skill on resume → they HAVE it → gap is minimal.
+        - Only skills MISSING from the resume (user_level=0) are real gaps.
+        - Skills the user has but at lower proficiency get a small gap.
+        """
         gaps: List[SkillGap] = []
 
         for skill_id, demand in market_demand.items():
             user_level = user_skills.get(skill_id, 0.0)
-            gap_score = max(0, demand - user_level)
 
-            if gap_score < 0.1:
-                continue  # No meaningful gap
+            if user_level > 0:
+                # User has this skill — only flag if well below demand
+                gap_score = max(0, demand - user_level)
+                if gap_score < 0.25:
+                    continue  # Close enough — no meaningful gap
+            else:
+                # Skill completely missing from resume — real gap
+                gap_score = demand  # Full demand is the gap
 
-            # Priority based on gap magnitude and demand
-            if gap_score > 0.6 and demand > 0.7:
-                priority = RiskLevel.CRITICAL
+            if gap_score < 0.15:
+                continue  # Skip tiny gaps
+
+            # Priority based on whether skill is missing vs weak
+            if user_level == 0 and demand > 0.7:
+                priority = RiskLevel.CRITICAL  # Missing + high demand
+            elif user_level == 0 and demand > 0.4:
+                priority = RiskLevel.HIGH      # Missing + moderate demand
             elif gap_score > 0.4:
-                priority = RiskLevel.HIGH
-            elif gap_score > 0.2:
-                priority = RiskLevel.MEDIUM
+                priority = RiskLevel.MEDIUM     # User has it but weak
             else:
                 priority = RiskLevel.LOW
 
@@ -201,9 +224,9 @@ class ResumeAnalyzer:
                 future_trend=future_trend,
             ))
 
-        # Sort by gap score desc
-        gaps.sort(key=lambda g: g.gap_score, reverse=True)
-        return gaps[:20]  # Top 20 gaps
+        # Sort: missing skills first (user_level=0), then by gap score
+        gaps.sort(key=lambda g: (-int(g.current_level == 0), -g.gap_score))
+        return gaps[:10]  # Top 10 most critical gaps only
 
     def _compute_readiness(
         self,

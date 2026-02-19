@@ -59,27 +59,36 @@ class SkillMomentumCalculator:
             # Short-term rate of change
             short_recent = np.mean(values[-self.SHORT_WINDOW:])
             short_prev = np.mean(values[-2 * self.SHORT_WINDOW: -self.SHORT_WINDOW])
-            short_roc = (short_recent - short_prev) / (abs(short_prev) + 1e-8)
+            short_roc = (short_recent - short_prev) / max(abs(short_prev), 0.01)
+            short_roc = np.clip(short_roc, -2.0, 2.0)  # cap individual ROC
 
             # Long-term rate of change
             long_recent = np.mean(values[-self.LONG_WINDOW:])
             long_prev = np.mean(values[: self.LONG_WINDOW])
-            long_roc = (long_recent - long_prev) / (abs(long_prev) + 1e-8)
+            long_roc = (long_recent - long_prev) / max(abs(long_prev), 0.01)
+            long_roc = np.clip(long_roc, -2.0, 2.0)  # cap individual ROC
 
             # Combined with short-term weighted more
             signal_momentum = 0.6 * short_roc + 0.4 * long_roc
             momentum += weight * signal_momentum
 
-        return round(float(momentum), 4)
+        # Final momentum clipped to [-1, 1] range
+        momentum = float(np.clip(momentum, -1.0, 1.0))
+        return round(momentum, 4)
 
     def is_spike(self, momentum: float, history: List[float]) -> bool:
-        """Detect if current momentum is a statistically significant spike."""
+        """Detect if current momentum is a statistically significant spike.
+        
+        With momentum clipped to [-1, 1], use absolute thresholds:
+        - |momentum| > 0.5 is a notable spike
+        - Z-score check against history as secondary confirmation
+        """
         if len(history) < 6:
-            return abs(momentum) > settings.momentum_spike_threshold
+            return abs(momentum) > 0.5
         mean_m = np.mean(history)
         std_m = np.std(history) + 1e-8
         z_score = (momentum - mean_m) / std_m
-        return z_score > settings.momentum_spike_threshold
+        return abs(momentum) > 0.5 or z_score > 2.0
 
 
 class BubbleDetector:

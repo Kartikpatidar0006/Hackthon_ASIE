@@ -3,7 +3,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, RadarChart, Radar, PolarGrid,
   PolarAngleAxis, PolarRadiusAxis, AreaChart, Area, Cell,
-  PieChart, Pie, Legend,
+  PieChart, Pie, Legend, ComposedChart,
 } from 'recharts';
 import { api } from './api';
 
@@ -524,15 +524,21 @@ function ForecastTab({ skills }) {
               <PanelTitle>5-Year Forecast</PanelTitle>
               <div style={{ height: 260 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="fcBand" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#1e40af" stopOpacity={0.45} />
+                        <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.10} />
+                      </linearGradient>
+                    </defs>
                     <CartesianGrid stroke={GRID_COLOR} strokeDasharray="3 3" />
                     <XAxis dataKey="month" {...AX} interval={9} />
                     <YAxis {...AX} />
                     <Tooltip {...TOOLTIP_STYLE} formatter={v => [parseFloat(v).toFixed(3), 'Demand']} />
-                    <Area type="monotone" dataKey="upper" stroke="none" fill="rgba(22,163,74,0.08)" />
-                    <Area type="monotone" dataKey="lower" stroke="none" fill="#f8fafc" />
-                    <Line type="monotone" dataKey="demand" stroke="#16a34a" strokeWidth={2} dot={false} />
-                  </AreaChart>
+                    <Area type="monotone" dataKey="upper" stroke="rgba(30,64,175,0.25)" strokeWidth={1} fill="url(#fcBand)" />
+                    <Area type="monotone" dataKey="lower" stroke="rgba(30,64,175,0.25)" strokeWidth={1} fill="#ffffff" />
+                    <Line type="monotone" dataKey="demand" stroke="#1e3a8a" strokeWidth={3} dot={false} activeDot={{ r: 5, fill: '#1e3a8a', stroke: '#fff', strokeWidth: 2 }} />
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             </Panel>
@@ -708,13 +714,14 @@ function ResumeTab() {
   const analyze = async () => {
     if (inputMode === 'paste' && !text.trim()) { alert('Please paste your resume text first.'); return; }
     if (inputMode === 'upload' && !uploadedFile) { alert('Please select a file to upload.'); return; }
+    if (!role) { alert('Please select a Target Role to get role-specific skill gaps.'); return; }
     setLoading(true);
     try {
       let res;
       if (inputMode === 'upload' && uploadedFile) {
-        res = await api.uploadResume(uploadedFile, { target_industry: industry || null, target_role: role || null });
+        res = await api.uploadResume(uploadedFile, { target_industry: industry || null, target_role: role });
       } else {
-        res = await api.analyzeResume({ resume_text: text, target_industry: industry || null, target_role: role || null });
+        res = await api.analyzeResume({ resume_text: text, target_industry: industry || null, target_role: role });
       }
       setResult(res);
     } catch (e) { console.error(e); alert(e.message || 'Analysis failed'); }
@@ -854,8 +861,8 @@ function ResumeTab() {
                 <option key={i} value={i}>{i.charAt(0).toUpperCase() + i.slice(1)}</option>
               ))}
             </select>
-            <select className="asie-select" style={{ ...selectStyle, minWidth: 200 }} value={role} onChange={e => setRole(e.target.value)}>
-              <option value="">Any Role</option>
+            <select className="asie-select" style={{ ...selectStyle, minWidth: 200, border: !role ? '2px solid #dc2626' : '1px solid var(--rule)' }} value={role} onChange={e => setRole(e.target.value)}>
+              <option value="">— Select Target Role * —</option>
               {roles.map(r => <option key={r.role_id} value={r.role_id}>{r.display_name}</option>)}
             </select>
             <button
@@ -885,6 +892,20 @@ function ResumeTab() {
 
       {result && (
         <>
+          {/* Clear info banner showing what was analyzed */}
+          {result.target_role && (
+            <div style={{
+              background: 'rgba(22,163,74,0.08)', border: '1px solid rgba(22,163,74,0.25)',
+              borderRadius: 'var(--r2)', padding: '12px 18px', marginBottom: 16,
+              display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: '#15803d',
+              fontFamily: 'var(--font-d)', fontWeight: 600,
+            }}>
+              <span style={{ fontSize: 18 }}>🎯</span>
+              Analysing gaps for <span style={{ textTransform: 'capitalize' }}>{result.target_role.replace(/_/g, ' ')}</span> role
+              — showing only skills required for this role that are missing from your resume
+            </div>
+          )}
+
           <KpiStrip cells={resumeKpis} />
 
           <EditorialRow cols="1fr 1fr" style={{ marginBottom: 20 }}>
@@ -917,22 +938,39 @@ function ResumeTab() {
             <Panel>
               <PanelLabel>Compatibility Score</PanelLabel>
               <PanelTitle style={{ fontSize: 18 }}>
-                {roleFits.length > 0 ? 'Best-Fit Roles' : 'Industry Fit'}
+                {result.target_role ? `Fit for ${result.target_role.replace(/_/g, ' ')}` : roleFits.length > 0 ? 'Best-Fit Roles' : 'Industry Fit'}
               </PanelTitle>
               {roleFits.length > 0 ? (
                 <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-                  {roleFits.map((rf, i) => (
-                    <div key={i} style={{ padding: '10px 0', borderBottom: '1px solid var(--rule2)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                        <span style={{ fontWeight: 700, fontSize: 15 }}>{rf.role_name}</span>
-                        <span style={{ fontFamily: 'var(--font-m)', fontSize: 14, fontWeight: 600, color: growthC(rf.readiness_score) }}>{pct(rf.readiness_score)}</span>
-                      </div>
-                      <ScoreBar label="Fit" value={rf.readiness_score} color={rf.readiness_score > .6 ? '#16a34a' : rf.readiness_score > .3 ? '#ca8a04' : '#dc2626'} />
-                      {rf.missing_required?.length > 0 && (
-                        <p style={{ fontSize: 13, color: '#dc2626', marginTop: 4 }}>Missing: {rf.missing_required.map(s => s.replace(/_/g, ' ')).join(', ')}</p>
-                      )}
-                    </div>
-                  ))}
+                  {(() => {
+                    // When a role is selected, show it first prominently + top 3 alternatives
+                    const targetId = result.target_role;
+                    let displayRoles = roleFits;
+                    if (targetId) {
+                      const selected = roleFits.find(r => r.role_id === targetId);
+                      const others = roleFits.filter(r => r.role_id !== targetId).slice(0, 3);
+                      displayRoles = selected ? [selected, ...others] : others;
+                    }
+                    return displayRoles.map((rf, i) => {
+                      const isTarget = targetId && rf.role_id === targetId;
+                      return (
+                        <div key={i} style={{ padding: '10px 0', borderBottom: '1px solid var(--rule2)', background: isTarget ? 'rgba(22,163,74,0.06)' : 'transparent', borderRadius: isTarget ? 8 : 0, paddingLeft: isTarget ? 10 : 0, paddingRight: isTarget ? 10 : 0 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <span style={{ fontWeight: 700, fontSize: 15 }}>{isTarget ? '★ ' : ''}{rf.role_name}</span>
+                            <span style={{ fontFamily: 'var(--font-m)', fontSize: 14, fontWeight: 600, color: growthC(rf.readiness_score) }}>{pct(rf.readiness_score)}</span>
+                          </div>
+                          <ScoreBar label="Fit" value={rf.readiness_score} color={rf.readiness_score > .6 ? '#16a34a' : rf.readiness_score > .3 ? '#ca8a04' : '#dc2626'} />
+                          {isTarget && rf.missing_required?.length > 0 && (
+                            <p style={{ fontSize: 13, color: '#dc2626', marginTop: 4 }}>Missing required: {rf.missing_required.map(s => s.replace(/_/g, ' ')).join(', ')}</p>
+                          )}
+                          {isTarget && rf.missing_preferred?.length > 0 && (
+                            <p style={{ fontSize: 13, color: '#ca8a04', marginTop: 2 }}>Nice to have: {rf.missing_preferred.map(s => s.replace(/_/g, ' ')).join(', ')}</p>
+                          )}
+                          {!isTarget && i > 0 && <p style={{ fontSize: 12, color: 'var(--text-m)', marginTop: 2 }}>Alternative role</p>}
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               ) : (
                 <div style={{ height: 260 }}>
@@ -958,9 +996,11 @@ function ResumeTab() {
           <div style={{ border: '1px solid var(--rule)', borderRadius: 'var(--r)', overflow: 'hidden', marginBottom: 20 }}>
             <Panel style={{ borderRight: 'none' }}>
               <PanelLabel>Learning Roadmap</PanelLabel>
-              <PanelTitle style={{ fontSize: 18, marginBottom: 14 }}>Recommended Skills</PanelTitle>
+              <PanelTitle style={{ fontSize: 18, marginBottom: 14 }}>
+                {result.target_role ? `Learn These for ${result.target_role.replace(/_/g, ' ')}` : 'Recommended Skills'}
+              </PanelTitle>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {(result.top_recommended_skills || []).map((s, i) => (
+                {(result.top_recommended_skills || []).slice(0, 8).map((s, i) => (
                   <Badge key={i} variant="b-teal" style={{ padding: '7px 16px', fontSize: 13 }}>{s.replace(/_/g, ' ')}</Badge>
                 ))}
               </div>

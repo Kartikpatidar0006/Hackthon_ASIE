@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, Form, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -260,12 +260,25 @@ def analyze_resume(req: ResumeRequest):
     """Privacy-preserving resume skill gap analysis."""
     from asie.resume import resume_analyzer
 
-    # Build market demand from forecasts
+    # Build market demand from forecasts — use final predicted demand value
+    # (normalized to 0-1) which reflects actual projected demand, not growth rate
     forecasts = _load_forecasts()
-    market_demand = {
-        sid: fc.get("growth_score", 0.5)
-        for sid, fc in forecasts.items()
-    }
+    market_demand = None
+    if not req.target_role:
+        # Only build generic demand if no specific role is targeted;
+        # when a role IS set, let ResumeAnalyzer use the curated role demand profile.
+        market_demand = {}
+        for sid, fc in forecasts.items():
+            predicted = fc.get("predicted_demand", [])
+            if predicted:
+                # Use last predicted value as demand indicator
+                final_demand = float(predicted[-1])
+                # Also factor in growth: high-growth skills are more demanded
+                growth = fc.get("growth_score", 0.5)
+                demand = 0.6 * min(final_demand, 1.0) + 0.4 * growth
+            else:
+                demand = fc.get("growth_score", 0.5)
+            market_demand[sid] = round(min(demand, 1.0), 4)
 
     result = resume_analyzer.analyze(
         resume_text=req.resume_text,
@@ -280,9 +293,9 @@ def analyze_resume(req: ResumeRequest):
 @app.post(f"{settings.api_prefix}/resume/upload")
 async def upload_resume(
     file: UploadFile = File(...),
-    target_industry: Optional[str] = None,
-    target_role: Optional[str] = None,
-    target_geo: Optional[str] = None,
+    target_industry: Optional[str] = Form(None),
+    target_role: Optional[str] = Form(None),
+    target_geo: Optional[str] = Form(None),
 ):
     """Upload a resume file (PDF, DOCX, or TXT) for skill gap analysis."""
     from asie.resume import resume_analyzer
@@ -328,10 +341,18 @@ async def upload_resume(
         raise HTTPException(status_code=400, detail="No text could be extracted from the uploaded file.")
 
     forecasts = _load_forecasts()
-    market_demand = {
-        sid: fc.get("growth_score", 0.5)
-        for sid, fc in forecasts.items()
-    }
+    market_demand = None
+    if not target_role:
+        market_demand = {}
+        for sid, fc in forecasts.items():
+            predicted = fc.get("predicted_demand", [])
+            if predicted:
+                final_demand = float(predicted[-1])
+                growth = fc.get("growth_score", 0.5)
+                demand = 0.6 * min(final_demand, 1.0) + 0.4 * growth
+            else:
+                demand = fc.get("growth_score", 0.5)
+            market_demand[sid] = round(min(demand, 1.0), 4)
 
     result = resume_analyzer.analyze(
         resume_text=text,

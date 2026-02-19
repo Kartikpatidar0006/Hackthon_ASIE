@@ -136,41 +136,70 @@ class SkillExtractor:
             - Frequency of mention
             - Context keywords (expert, beginner, familiar, etc.)
             - Section placement (skills section vs general mention)
+            
+        Philosophy: if a person lists a skill on their resume, they *have* it.
+        Default proficiency = 0.70 (working professional level).
+        Context keywords adjust up/down from there.
         """
         skills_conf = self.extract_with_confidence(resume_text)
         result: Dict[str, float] = {}
 
         # Proficiency context words
-        expert_words = {"expert", "advanced", "senior", "lead", "architect", "principal", "mastery", "proficient"}
-        intermediate_words = {"intermediate", "experienced", "familiar", "working knowledge", "comfortable"}
-        beginner_words = {"beginner", "basic", "learning", "exposure", "introductory", "fundamentals"}
+        expert_words = {"expert", "advanced", "senior", "lead", "architect",
+                        "principal", "mastery", "proficient", "extensive",
+                        "strong", "deep expertise", "specialist"}
+        intermediate_words = {"intermediate", "experienced", "working knowledge",
+                              "comfortable", "hands-on", "production", "solid"}
+        low_familiar_words = {"familiar", "familiar with", "some experience",
+                              "aware of", "dabbled", "exposure to"}
+        beginner_words = {"beginner", "basic knowledge", "just learning",
+                          "currently learning", "introductory",
+                          "fundamentals only", "coursework", "novice"}
+        years_pattern = re.compile(r'(\d+)\+?\s*(?:years?|yrs?)', re.IGNORECASE)
 
         text_lower = resume_text.lower()
 
-        for skill_name, confidence in skills_conf:
-            # Base level from confidence
-            base_level = confidence * 0.6
+        # Detect global experience level from resume text
+        global_years = 0
+        year_matches = years_pattern.findall(text_lower)
+        if year_matches:
+            global_years = max(int(y) for y in year_matches)
 
+        for skill_name, confidence in skills_conf:
             # Contextual proficiency boost
             # Look for proficiency keywords near the skill mention
             skill_display = skill_name.replace("_", " ")
             skill_pattern = re.compile(
-                r'(.{0,50})' + re.escape(skill_display) + r'(.{0,50})',
+                r'(.{0,80})' + re.escape(skill_display) + r'(.{0,80})',
                 re.IGNORECASE
             )
             matches = skill_pattern.findall(text_lower)
             context = " ".join([m[0] + m[1] for m in matches])
 
-            if any(w in context for w in expert_words):
-                base_level = min(base_level + 0.35, 1.0)
-            elif any(w in context for w in intermediate_words):
-                base_level = min(base_level + 0.2, 0.85)
-            elif any(w in context for w in beginner_words):
-                base_level = min(base_level + 0.05, 0.5)
-            else:
-                base_level = min(base_level + 0.15, 0.75)
+            # Check for years of experience near this skill
+            local_years = years_pattern.findall(context)
+            skill_years = max((int(y) for y in local_years), default=0)
 
-            result[skill_name] = round(base_level, 3)
+            # Assign proficiency — listed on resume = you have it
+            if any(w in context for w in beginner_words):
+                level = 0.35
+            elif any(w in context for w in low_familiar_words):
+                level = 0.50
+            elif any(w in context for w in expert_words) or skill_years >= 5:
+                level = 0.95
+            elif any(w in context for w in intermediate_words) or skill_years >= 2:
+                level = 0.80
+            elif global_years >= 3:
+                level = 0.75
+            else:
+                # Default: listed on resume = working professional level
+                level = 0.70
+            
+            # Small boost for high NLP confidence (mentioned multiple times)
+            if confidence >= 0.95:
+                level = min(level + 0.05, 1.0)
+
+            result[skill_name] = round(level, 3)
 
         return result
 
