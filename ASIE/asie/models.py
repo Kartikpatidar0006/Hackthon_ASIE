@@ -113,6 +113,19 @@ class SkillGap(BaseModel):
     priority: RiskLevel = RiskLevel.MEDIUM
     recommended_resources: List[str] = Field(default_factory=list)
     growth_forecast: float = 0.0
+    future_trend: str = ""  # e.g. "↑ High demand in 3-5 yrs"
+
+
+class RoleFitResult(BaseModel):
+    """How well a candidate fits a specific job role."""
+    role_id: str
+    role_name: str
+    readiness_score: float = Field(ge=0, le=1, default=0.0)
+    matched_skills: List[str] = Field(default_factory=list)
+    missing_required: List[str] = Field(default_factory=list)
+    missing_preferred: List[str] = Field(default_factory=list)
+    trend_outlook: str = "stable"
+    future_demand_multiplier: float = 1.0
 
 
 class ResumeAnalysis(BaseModel):
@@ -123,6 +136,10 @@ class ResumeAnalysis(BaseModel):
     overall_readiness_score: float = Field(ge=0, le=1, default=0.0)
     top_recommended_skills: List[str] = Field(default_factory=list)
     industry_fit: Dict[str, float] = Field(default_factory=dict)
+    # ── Role-based analysis fields ────────────────────
+    target_role: Optional[str] = None
+    role_readiness_score: Optional[float] = Field(default=None, ge=0, le=1)
+    role_fit_results: List[RoleFitResult] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=datetime.utcnow)
 
 

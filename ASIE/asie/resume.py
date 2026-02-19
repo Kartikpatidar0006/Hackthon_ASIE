@@ -26,9 +26,14 @@ from loguru import logger
 
 from asie.config import settings
 from asie.graph import skill_graph
-from asie.models import Industry, ResumeAnalysis, RiskLevel, SkillGap
+from asie.models import Industry, ResumeAnalysis, RiskLevel, RoleFitResult, SkillGap
 from asie.nlp import skill_extractor
-from asie.taxonomy import taxonomy_index
+from asie.taxonomy import (
+    JOB_ROLE_PROFILES,
+    get_role_demand_profile,
+    get_roles_for_industry,
+    taxonomy_index,
+)
 
 
 class PrivacyGuard:
@@ -77,6 +82,7 @@ class ResumeAnalyzer:
         resume_text: str,
         target_industry: Optional[str] = None,
         target_geo: Optional[str] = None,
+        target_role: Optional[str] = None,
         market_demand: Optional[Dict[str, float]] = None,
     ) -> ResumeAnalysis:
         """
@@ -87,8 +93,11 @@ class ResumeAnalyzer:
         resume_text : raw resume text
         target_industry : optional industry filter
         target_geo : optional geo filter
+        target_role : job role id (e.g. 'ai_engineer', 'full_stack_developer').
+                      When set, gaps & readiness are scored against the role's
+                      specific demand profile and enriched with 3-5 yr trend data.
         market_demand : dict of {skill_id: demand_score (0-1)}
-                        If None, uses a default demand profile.
+                        If None, uses role-specific or default demand profile.
         """
         # Step 1: Privacy sanitization
         sanitized = self.privacy.sanitize(resume_text)
@@ -99,11 +108,26 @@ class ResumeAnalyzer:
         logger.info(f"Extracted {len(user_skills)} skills from resume")
 
         # Step 3: Build market demand profile
+        #   Priority: target_role > target_industry > generic
+        role_profile = None
+        if target_role:
+            role_demand = get_role_demand_profile(target_role)
+            role_profile = JOB_ROLE_PROFILES.get(target_role)
+            if role_demand:
+                logger.info(f"Using role-specific demand for '{target_role}'")
+                # Apply future demand multiplier to project 3-5yr relevance
+                multiplier = role_profile.future_demand_multiplier if role_profile else 1.0
+                market_demand = {
+                    sk: min(v * multiplier, 1.0) for sk, v in role_demand.items()
+                }
+            else:
+                logger.warning(f"Unknown role '{target_role}', falling back")
+
         if market_demand is None:
             market_demand = self._default_demand_profile(target_industry)
 
-        # Step 4: Compute gaps
-        gaps = self._compute_gaps(user_skills, market_demand)
+        # Step 4: Compute gaps (with future trend hints)
+        gaps = self._compute_gaps(user_skills, market_demand, role_profile)
 
         # Step 5: Compute overall readiness
         readiness = self._compute_readiness(user_skills, market_demand)
@@ -114,20 +138,33 @@ class ResumeAnalyzer:
         # Step 7: Top recommended skills
         recommended = self._get_recommendations(user_skills, gaps)
 
+        # Step 8: Role fit scores (for the selected industry or all)
+        role_fits = self._compute_role_fits(user_skills, target_industry)
+        target_role_readiness = None
+        if target_role:
+            for rf in role_fits:
+                if rf.role_id == target_role:
+                    target_role_readiness = rf.readiness_score
+                    break
+
         return ResumeAnalysis(
             extracted_skills=list(user_skills.keys()),
             skill_gaps=gaps,
             overall_readiness_score=readiness,
             top_recommended_skills=recommended,
             industry_fit=industry_fit,
+            target_role=target_role,
+            role_readiness_score=target_role_readiness,
+            role_fit_results=role_fits,
         )
 
     def _compute_gaps(
         self,
         user_skills: Dict[str, float],
         market_demand: Dict[str, float],
+        role_profile: Any = None,
     ) -> List[SkillGap]:
-        """Identify and score skill gaps."""
+        """Identify and score skill gaps with 3-5yr trend annotations."""
         gaps: List[SkillGap] = []
 
         for skill_id, demand in market_demand.items():
@@ -147,6 +184,9 @@ class ResumeAnalyzer:
             else:
                 priority = RiskLevel.LOW
 
+            # Build future-trend hint
+            future_trend = self._trend_hint(skill_id, demand, role_profile)
+
             # Get learning path recommendations
             resources = self._suggest_resources(skill_id)
 
@@ -157,7 +197,8 @@ class ResumeAnalyzer:
                 gap_score=round(gap_score, 3),
                 priority=priority,
                 recommended_resources=resources,
-                growth_forecast=round(demand * 1.2, 3),  # simplified
+                growth_forecast=round(demand * 1.2, 3),
+                future_trend=future_trend,
             ))
 
         # Sort by gap score desc
@@ -276,6 +317,82 @@ class ResumeAnalyzer:
                     demand[sk] = min(demand[sk] * 1.2, 1.0)
 
         return demand
+
+    # ── Role-based helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _trend_hint(skill_id: str, demand: float, role_profile: Any = None) -> str:
+        """Return a human-readable 3-5yr trend string for a skill."""
+        multiplier = role_profile.future_demand_multiplier if role_profile else 1.0
+        projected = min(demand * multiplier, 1.0)
+        delta = projected - demand
+
+        if delta > 0.10:
+            return f"\u2191\u2191 Very high demand in 3-5 yrs (projected {projected:.0%})"
+        elif delta > 0.03:
+            return f"\u2191 Growing demand in 3-5 yrs (projected {projected:.0%})"
+        elif delta > -0.03:
+            return f"\u2192 Stable demand (projected {projected:.0%})"
+        else:
+            return f"\u2193 Declining demand (projected {projected:.0%})"
+
+    def _compute_role_fits(
+        self,
+        user_skills: Dict[str, float],
+        target_industry: Optional[str] = None,
+    ) -> List[RoleFitResult]:
+        """Score how well a user fits relevant job roles."""
+        profiles = (
+            get_roles_for_industry(target_industry)
+            if target_industry
+            else list(JOB_ROLE_PROFILES.values())
+        )
+        results: List[RoleFitResult] = []
+        for profile in profiles:
+            results.append(self._score_single_role(user_skills, profile))
+        results.sort(key=lambda r: r.readiness_score, reverse=True)
+        return results
+
+    @staticmethod
+    def _score_single_role(
+        user_skills: Dict[str, float],
+        profile: Any,
+    ) -> RoleFitResult:
+        """Compute readiness for one job role."""
+        matched, missing_req, missing_pref = [], [], []
+
+        total_w, total_cov = 0.0, 0.0
+        for sk, imp in profile.required_skills.items():
+            level = user_skills.get(sk, 0.0)
+            cov = min(level / (imp + 1e-8), 1.0)
+            total_w += imp
+            total_cov += cov * imp
+            (matched if level >= 0.1 else missing_req).append(sk)
+
+        for sk, imp in profile.preferred_skills.items():
+            level = user_skills.get(sk, 0.0)
+            w = imp * 0.5
+            cov = min(level / (imp + 1e-8), 1.0)
+            total_w += w
+            total_cov += cov * w
+            if level >= 0.1:
+                if sk not in matched:
+                    matched.append(sk)
+            else:
+                missing_pref.append(sk)
+
+        readiness = round(float(np.clip(total_cov / (total_w + 1e-8), 0, 1)), 4)
+
+        return RoleFitResult(
+            role_id=profile.role_id,
+            role_name=profile.display_name,
+            readiness_score=readiness,
+            matched_skills=matched,
+            missing_required=missing_req,
+            missing_preferred=missing_pref,
+            trend_outlook=profile.trend_outlook,
+            future_demand_multiplier=profile.future_demand_multiplier,
+        )
 
 
 # Module-level singleton

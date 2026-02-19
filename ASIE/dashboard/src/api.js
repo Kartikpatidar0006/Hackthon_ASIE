@@ -19,6 +19,7 @@ export const api = {
   getLearningPath:(from, to)     => fetchJSON(`/graph/learning-path?from_skill=${from}&to_skill=${to}`),
   filterByGeo:    (geo)          => fetchJSON(`/filters/geo?geo=${geo}`),
   filterByIndustry:(ind)         => fetchJSON(`/filters/industry?industry=${ind}`),
+  getRoles:       (industry='')  => fetchJSON(`/roles${industry ? `?industry=${industry}` : ''}`),
   analyzeResume:  (body)         => fetch(`${BASE}/resume/analyze`, {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
   }).then(r => r.json()),

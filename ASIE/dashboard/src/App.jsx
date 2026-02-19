@@ -261,18 +261,33 @@ function ForecastTab({ skills }) {
 function ResumeTab() {
   const [text, setText] = useState('');
   const [industry, setIndustry] = useState('');
+  const [role, setRole] = useState('');
+  const [roles, setRoles] = useState([]);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // Fetch roles whenever industry changes
+  useEffect(() => {
+    setRole('');
+    api.getRoles(industry).then(r => setRoles(r.roles || [])).catch(() => setRoles([]));
+  }, [industry]);
 
   const analyze = async () => {
     if (!text.trim()) return;
     setLoading(true);
     try {
-      const res = await api.analyzeResume({ resume_text: text, target_industry: industry || null });
+      const res = await api.analyzeResume({
+        resume_text: text,
+        target_industry: industry || null,
+        target_role: role || null,
+      });
       setResult(res);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
+
+  const trendIcon = (outlook) =>
+    outlook === 'growing' ? '🟢 Growing' : outlook === 'declining' ? '🔴 Declining' : '🟡 Stable';
 
   return (
     <div className="space-y-6">
@@ -284,31 +299,56 @@ function ResumeTab() {
           value={text}
           onChange={e => setText(e.target.value)}
         />
-        <div className="flex gap-3 mt-3">
+        <div className="flex flex-wrap gap-3 mt-3">
+          {/* Industry select */}
           <select className="bg-surface-700 border border-surface-600 rounded-lg px-3 py-2 text-sm text-white outline-none" value={industry} onChange={e => setIndustry(e.target.value)}>
             <option value="">Any Industry</option>
             {['technology','finance','healthcare','manufacturing','energy','education','retail','government'].map(i => (
               <option key={i} value={i}>{i.charAt(0).toUpperCase() + i.slice(1)}</option>
             ))}
           </select>
+          {/* Role select (populated from API based on industry) */}
+          <select className="bg-surface-700 border border-surface-600 rounded-lg px-3 py-2 text-sm text-white outline-none min-w-[200px]" value={role} onChange={e => setRole(e.target.value)}>
+            <option value="">Any Role</option>
+            {roles.map(r => (
+              <option key={r.role_id} value={r.role_id}>{r.display_name}</option>
+            ))}
+          </select>
           <button onClick={analyze} disabled={loading} className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium disabled:opacity-50 transition">
             {loading ? 'Analysing...' : 'Analyse Gaps'}
           </button>
         </div>
+        {role && roles.length > 0 && (
+          <p className="text-xs text-surface-300 mt-2">
+            {roles.find(r => r.role_id === role)?.description || ''}
+            {' — '}
+            <span className="font-medium">{trendIcon(roles.find(r => r.role_id === role)?.trend_outlook)}</span>
+            {' (3-5 yr outlook)'}
+          </p>
+        )}
       </div>
 
       {result && (
         <>
+          {/* KPI cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard title="Skills Found" value={result.extracted_skills?.length || 0} accent="text-blue-400" />
-            <StatCard title="Readiness" value={pct(result.overall_readiness_score)} accent={growthColor(result.overall_readiness_score)} />
+            <StatCard
+              title={result.target_role ? 'Role Readiness' : 'Readiness'}
+              value={pct(result.role_readiness_score ?? result.overall_readiness_score)}
+              accent={growthColor(result.role_readiness_score ?? result.overall_readiness_score)}
+              subtitle={result.target_role ? result.target_role.replace(/_/g, ' ') : undefined}
+            />
             <StatCard title="Gaps Found" value={result.skill_gaps?.length || 0} accent="text-amber-400" />
             <StatCard title="Recommended" value={result.top_recommended_skills?.length || 0} accent="text-purple-400" />
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">
+            {/* Skill Gaps with future trend */}
             <div className="card">
-              <h3 className="text-sm font-semibold text-surface-200 mb-3 uppercase tracking-wider">Skill Gaps (by priority)</h3>
+              <h3 className="text-sm font-semibold text-surface-200 mb-3 uppercase tracking-wider">
+                Skill Gaps {result.target_role ? `for ${result.target_role.replace(/_/g, ' ')}` : '(by priority)'}
+              </h3>
               <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
                 {(result.skill_gaps || []).map((g, i) => (
                   <div key={i} className="border-b border-surface-700 pb-2">
@@ -317,24 +357,53 @@ function ResumeTab() {
                       <span className={`badge ${g.priority === 'critical' ? 'badge-red' : g.priority === 'high' ? 'badge-yellow' : 'badge-blue'}`}>{g.priority}</span>
                     </div>
                     <ScoreBar label="Gap" value={g.gap_score} color="bg-red-500" />
+                    {g.future_trend && (
+                      <p className="text-xs text-surface-300 mt-0.5">{g.future_trend}</p>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
 
+            {/* Role Fit Ranking OR Industry Fit */}
             <div className="card">
-              <h3 className="text-sm font-semibold text-surface-200 mb-3 uppercase tracking-wider">Industry Fit</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={Object.entries(result.industry_fit || {}).map(([k, v]) => ({ industry: k, fit: v }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="industry" tick={{ fill: '#94a3b8', fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
-                  <YAxis domain={[0, 1]} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                  <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }} />
-                  <Bar dataKey="fit" fill="#8b5cf6" radius={[4, 4, 0, 0]}>
-                    {Object.entries(result.industry_fit || {}).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              {(result.role_fit_results && result.role_fit_results.length > 0) ? (
+                <>
+                  <h3 className="text-sm font-semibold text-surface-200 mb-3 uppercase tracking-wider">Best-Fit Roles for You</h3>
+                  <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
+                    {result.role_fit_results.map((rf, i) => (
+                      <div key={i} className="border-b border-surface-700 pb-2">
+                        <div className="flex justify-between items-center text-sm">
+                          <div>
+                            <span className="font-medium">{rf.role_name}</span>
+                            <span className="ml-2 text-xs text-surface-300">{trendIcon(rf.trend_outlook)}</span>
+                          </div>
+                          <span className={`text-sm font-bold ${growthColor(rf.readiness_score)}`}>{pct(rf.readiness_score)}</span>
+                        </div>
+                        <ScoreBar label="Fit" value={rf.readiness_score} color={rf.readiness_score > 0.6 ? 'bg-emerald-500' : rf.readiness_score > 0.3 ? 'bg-amber-500' : 'bg-red-500'} />
+                        {rf.missing_required.length > 0 && (
+                          <p className="text-xs text-red-400 mt-0.5">Missing: {rf.missing_required.map(s => s.replace(/_/g, ' ')).join(', ')}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-semibold text-surface-200 mb-3 uppercase tracking-wider">Industry Fit</h3>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={Object.entries(result.industry_fit || {}).map(([k, v]) => ({ industry: k, fit: v }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="industry" tick={{ fill: '#94a3b8', fontSize: 10 }} angle={-30} textAnchor="end" height={60} />
+                      <YAxis domain={[0, 1]} tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                      <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }} />
+                      <Bar dataKey="fit" fill="#8b5cf6" radius={[4, 4, 0, 0]}>
+                        {Object.entries(result.industry_fit || {}).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </>
+              )}
             </div>
           </div>
 

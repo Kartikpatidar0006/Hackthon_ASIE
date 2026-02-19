@@ -70,6 +70,7 @@ class ResumeRequest(BaseModel):
     resume_text: str
     target_industry: Optional[str] = None
     target_geo: Optional[str] = None
+    target_role: Optional[str] = None  # e.g. "ai_engineer", "full_stack_developer"
 
 
 class BacktestRequest(BaseModel):
@@ -223,6 +224,35 @@ def get_at_risk_skills(limit: int = Query(default=15, le=50)):
     return {"at_risk": items[:limit]}
 
 
+# ── Job Roles ───────────────────────────────────────────────────────────────
+
+@app.get(f"{settings.api_prefix}/roles")
+def list_all_roles(industry: Optional[str] = None):
+    """List available job roles, optionally filtered by industry."""
+    from asie.taxonomy import JOB_ROLE_PROFILES, get_roles_for_industry
+
+    profiles = (
+        get_roles_for_industry(industry)
+        if industry
+        else list(JOB_ROLE_PROFILES.values())
+    )
+    return {
+        "roles": [
+            {
+                "role_id": p.role_id,
+                "display_name": p.display_name,
+                "description": p.description,
+                "industries": p.industries,
+                "required_skills": list(p.required_skills.keys()),
+                "preferred_skills": list(p.preferred_skills.keys()),
+                "trend_outlook": p.trend_outlook,
+                "future_demand_multiplier": p.future_demand_multiplier,
+            }
+            for p in profiles
+        ]
+    }
+
+
 # ── Resume Analysis ────────────────────────────────────────────────────────
 
 @app.post(f"{settings.api_prefix}/resume/analyze")
@@ -241,6 +271,7 @@ def analyze_resume(req: ResumeRequest):
         resume_text=req.resume_text,
         target_industry=req.target_industry,
         target_geo=req.target_geo,
+        target_role=req.target_role,
         market_demand=market_demand,
     )
     return result.model_dump(mode="json")
