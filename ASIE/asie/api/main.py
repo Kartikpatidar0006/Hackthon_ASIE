@@ -277,6 +277,72 @@ def analyze_resume(req: ResumeRequest):
     return result.model_dump(mode="json")
 
 
+@app.post(f"{settings.api_prefix}/resume/upload")
+async def upload_resume(
+    file: UploadFile = File(...),
+    target_industry: Optional[str] = None,
+    target_role: Optional[str] = None,
+    target_geo: Optional[str] = None,
+):
+    """Upload a resume file (PDF, DOCX, or TXT) for skill gap analysis."""
+    from asie.resume import resume_analyzer
+
+    allowed_types = {
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "text/plain": "txt",
+    }
+
+    # Also allow by extension if MIME is generic
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if file.filename else ""
+    file_type = allowed_types.get(file.content_type) or (ext if ext in ("pdf", "docx", "txt") else None)
+
+    if not file_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{file.content_type}'. Upload PDF, DOCX, or TXT.",
+        )
+
+    raw = await file.read()
+
+    try:
+        if file_type == "pdf":
+            import io
+            from PyPDF2 import PdfReader
+
+            reader = PdfReader(io.BytesIO(raw))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        elif file_type == "docx":
+            import io
+            from docx import Document
+
+            doc = Document(io.BytesIO(raw))
+            text = "\n".join(p.text for p in doc.paragraphs)
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+    except Exception as exc:
+        logger.error(f"File parsing error: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text could be extracted from the uploaded file.")
+
+    forecasts = _load_forecasts()
+    market_demand = {
+        sid: fc.get("growth_score", 0.5)
+        for sid, fc in forecasts.items()
+    }
+
+    result = resume_analyzer.analyze(
+        resume_text=text,
+        target_industry=target_industry,
+        target_geo=target_geo,
+        target_role=target_role,
+        market_demand=market_demand,
+    )
+    return result.model_dump(mode="json")
+
+
 # ── Alerts ─────────────────────────────────────────────────────────────────
 
 @app.get(f"{settings.api_prefix}/alerts")

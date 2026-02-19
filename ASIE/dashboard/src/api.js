@@ -23,4 +23,15 @@ export const api = {
   analyzeResume:  (body)         => fetch(`${BASE}/resume/analyze`, {
     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
   }).then(r => r.json()),
+  uploadResume:   (file, opts={}) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (opts.target_industry) fd.append('target_industry', opts.target_industry);
+    if (opts.target_role) fd.append('target_role', opts.target_role);
+    if (opts.target_geo) fd.append('target_geo', opts.target_geo);
+    return fetch(`${BASE}/resume/upload`, { method: 'POST', body: fd }).then(r => {
+      if (!r.ok) return r.json().then(e => { throw new Error(e.detail || 'Upload failed'); });
+      return r.json();
+    });
+  },
 };
